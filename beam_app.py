@@ -3,11 +3,6 @@ import streamlit as st
 import numpy as np
 import matplotlib.pyplot as plt
 
-# ==========================================
-# BEAMLAB 1.0
-# Beam Deflection and Stress Simulator
-# ==========================================
-
 st.set_page_config(
     page_title="BeamLab",
     page_icon="📐",
@@ -24,9 +19,8 @@ st.write(
 
 st.divider()
 
-# ==========================================
 # SIDEBAR: INPUT PARAMETERS
-# ==========================================
+
 
 st.sidebar.header("Beam Configuration")
 
@@ -108,9 +102,8 @@ I = b * h**3 / 12
 # Distance from neutral axis to outermost fibre
 c = h / 2
 
-# ==========================================
 # ENGINEERING CALCULATIONS
-# ==========================================
+
 
 x = np.linspace(0, L, 501)
 
@@ -190,9 +183,9 @@ V_max = float(np.max(np.abs(V)))
 stress_max = M_max * c / I
 deflection_max = float(np.max(np.abs(y)))
 
-# ==========================================
+
 # RESULTS DASHBOARD
-# ==========================================
+
 
 st.header("Analysis Results")
 
@@ -236,11 +229,7 @@ st.caption(
     "Reactions and internal forces use the sign conventions "
     "implemented in the analysis. Magnitudes are shown above."
 )
-
-# ==========================================
 # BEAM VISUALIZATION
-# ==========================================
-
 st.divider()
 st.header("Beam Visualization")
 
@@ -302,9 +291,9 @@ ax.grid(axis="x", alpha=0.3)
 st.pyplot(fig)
 plt.close(fig)
 
-# ==========================================
+
 # SHEAR FORCE DIAGRAM
-# ==========================================
+
 
 st.divider()
 st.header("Shear Force Diagram (SFD)")
@@ -323,9 +312,8 @@ ax.grid(True)
 st.pyplot(fig)
 plt.close(fig)
 
-# ==========================================
 # BENDING MOMENT DIAGRAM
-# ==========================================
+
 
 st.header("Bending Moment Diagram (BMD)")
 
@@ -343,9 +331,9 @@ ax.grid(True)
 st.pyplot(fig)
 plt.close(fig)
 
-# ==========================================
+
 # DEFLECTION CURVE
-# ==========================================
+
 
 st.header("Elastic Deflection Curve")
 
@@ -389,9 +377,9 @@ st.caption(
     "The reported deflection remains the calculated physical value."
 )
 
-# ==========================================
+
 # ENGINEERING SUMMARY
-# ==========================================
+
 
 st.divider()
 st.header("Engineering Summary")
