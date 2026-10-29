@@ -8,7 +8,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title(" BeamLab ")
+st.title(" BeamLab_2 ")
 st.subheader("Beam Deflection and Stress Simulator")
 
 st.write(
