@@ -118,18 +118,35 @@ else:
 
 st.sidebar.header("Material")
 
+material_options = list(MATERIALS.keys()) + ["Custom"]
+
 material = st.sidebar.selectbox(
     "Select material",
-    list(MATERIALS.keys())
+    material_options
 )
 
-E = MATERIALS[material]
+if material == "Custom":
+    E_GPa = st.sidebar.number_input(
+        "Enter Young's modulus (GPa)",
+        min_value=0.001,
+        max_value=1_000_000.0,
+        value=200.0,
+        step=1.0,
+        format="%.3f",
+        key="custom_youngs_modulus"
+    )
+    E = E_GPa * 1e9
+
+else:
+    E = MATERIALS[material]
+    E_GPa = E / 1e9
 
 st.sidebar.info(
     f"**Material:** {material}\n\n"
-    f"**Young's modulus:** {E / 1e9:.1f} GPa\n\n"
+    f"**Young's modulus:** {E_GPa:.3f} GPa\n\n"
     f"**Young's modulus:** {E:.3e} Pa"
 )
+
 
 st.sidebar.header("Cross-Section")
 
