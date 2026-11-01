@@ -1,3 +1,4 @@
-streamlit
-numpy
-matplotlib
+   streamlit>=1.30
+   plotly>=5.18
+   numpy
+   pandas
