@@ -14,11 +14,18 @@ Inputs
     Axial load     : positive toward +X (tension at the free end)
     Torque         : positive by the right-hand rule about +X
 
-Method
-    Euler-Bernoulli beam finite elements (cubic Hermite) for each bending
-    plane, 1-D bar elements for axial force and for torsion. Shear force and
-    bending moment are then recovered exactly from statics, so the diagrams
-    are exact for any combination of point loads and UDLs.
+Method (APL104 topics)
+    Equilibrium of a cut section       -> reactions, shear force V(x), bending moment M(x)
+    Euler-Bernoulli beam theory        -> EI v'' = M(x), integrated twice with boundary conditions
+                                          (also for statically indeterminate beams)
+    Flexure formula, unsymmetrical     -> sigma = N/A - Mxy y/Izz - Mxz z/Iyy
+    bending (principal axes)
+    Torsion of shafts (circular)       -> tau = T r / J,  phi' = T / (G J)
+    Hooke's law                        -> u' = N / (E A),  G = E / (2(1+nu))
+    Stress transformation, Mohr's      -> principal stresses and maximum shear stress
+    circle
+    Optional, outside APL104: Roark's approximations for rectangular-section torsion
+    (disabled unless the user ticks the option in the sidebar).
 """
 
 from __future__ import annotations
@@ -27,8 +34,12 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+
+try:
+    import plotly.graph_objects as go
+except ImportError:  # shown as a friendly message in main()
+    go = None
 
 # ----------------------------------------------------------------------------
 # Constants
@@ -92,6 +103,7 @@ class Section:
     cz: float       # half-extent in Z [m]
     tau_factor: float   # tau_max = tau_factor * T  [1/m^3]
     label: str = ""
+    torsion_basis: str = "exact"   # "exact" (circle, tau = T r / J) or "roark" (rectangle approximation)
 
     def perimeter(self, per_edge: int = 8, n_circle: int = 56):
         """Points (y, z) around the outline of the section."""
@@ -133,6 +145,7 @@ def make_section(kind: str, b_mm: float, h_mm: float, d_mm: float) -> Section:
             cz=b / 2.0,
             tau_factor=tau_factor,
             label=f"Rectangle {b_mm:g} × {h_mm:g} mm (width Z × height Y)",
+            torsion_basis="roark",
         )
     d = d_mm / 1000.0
     I = np.pi * d**4 / 64.0
@@ -179,101 +192,13 @@ def supports_for(beam_type: str, L: float, s1: float = 0.0, s2: float = 0.0):
     return [s1, s2], [], [min(s1, s2)]  # Overhanging
 
 
-def _node_index(nodes, x):
-    return int(np.argmin(np.abs(nodes - x)))
-
-
-def solve_transverse(nodes, EI, pinned, fixed, pts, udls):
-    """
-    Cubic-Hermite beam FE for one bending plane.
-    pts : [(x, F)]   forces along the +direction of the plane
-    udls: [(a, b, q)] distributed load along the +direction
-    Returns nodal dofs [v, theta,...], reaction forces and reaction moments.
-    """
-    n = len(nodes)
-    nd = 2 * n
-    K = np.zeros((nd, nd))
-    F = np.zeros(nd)
-    for e in range(n - 1):
-        l = nodes[e + 1] - nodes[e]
-        k = (EI / l**3) * np.array(
-            [
-                [12.0, 6 * l, -12.0, 6 * l],
-                [6 * l, 4 * l**2, -6 * l, 2 * l**2],
-                [-12.0, -6 * l, 12.0, -6 * l],
-                [6 * l, 2 * l**2, -6 * l, 4 * l**2],
-            ]
-        )
-        s = slice(2 * e, 2 * e + 4)
-        K[s, s] += k
-    for x, f in pts:
-        F[2 * _node_index(nodes, x)] += f
-    for a, b, q in udls:
-        for e in range(n - 1):
-            mid = 0.5 * (nodes[e] + nodes[e + 1])
-            if a < mid < b:
-                l = nodes[e + 1] - nodes[e]
-                F[2 * e: 2 * e + 4] += q * l / 2.0 * np.array([1.0, l / 6.0, 1.0, -l / 6.0])
-
-    fixed_dofs = []
-    for p in pinned:
-        fixed_dofs.append(2 * _node_index(nodes, p))
-    for p in fixed:
-        i = _node_index(nodes, p)
-        fixed_dofs += [2 * i, 2 * i + 1]
-    fixed_dofs = np.unique(fixed_dofs)
-    free = np.setdiff1d(np.arange(nd), fixed_dofs)
-
-    u = np.zeros(nd)
-    try:
-        u[free] = np.linalg.solve(K[np.ix_(free, free)], F[free])
-    except np.linalg.LinAlgError as exc:
-        raise ValueError("The beam is unstable with these supports.") from exc
-
-    R = K @ u - F
-    forces = [(nodes[d // 2], R[d]) for d in fixed_dofs if d % 2 == 0]
-    moments = [(nodes[d // 2], R[d]) for d in fixed_dofs if d % 2 == 1]
-    return u, forces, moments
-
-
-def solve_bar(nodes, stiffness, restrained, pts):
-    """1-D bar / shaft FE (axial force or torsion). Returns nodal values and reactions."""
-    n = len(nodes)
-    K = np.zeros((n, n))
-    F = np.zeros(n)
-    for e in range(n - 1):
-        l = nodes[e + 1] - nodes[e]
-        k = stiffness / l * np.array([[1.0, -1.0], [-1.0, 1.0]])
-        K[e: e + 2, e: e + 2] += k
-    for x, f in pts:
-        F[_node_index(nodes, x)] += f
-    r_idx = np.unique([_node_index(nodes, p) for p in restrained])
-    free = np.setdiff1d(np.arange(n), r_idx)
-    u = np.zeros(n)
-    if len(free):
-        try:
-            u[free] = np.linalg.solve(K[np.ix_(free, free)], F[free])
-        except np.linalg.LinAlgError as exc:
-            raise ValueError("Axial / torsional restraint is insufficient.") from exc
-    R = K @ u - F
-    reactions = [(nodes[i], R[i]) for i in r_idx]
-    return u, reactions
-
-
-def hermite(xq, nodes, v, th):
-    e = np.clip(np.searchsorted(nodes, xq, side="right") - 1, 0, len(nodes) - 2)
-    x0 = nodes[e]
-    l = nodes[e + 1] - x0
-    s = (xq - x0) / l
-    h1 = 1 - 3 * s**2 + 2 * s**3
-    h2 = l * (s - 2 * s**2 + s**3)
-    h3 = 3 * s**2 - 2 * s**3
-    h4 = l * (-(s**2) + s**3)
-    return h1 * v[e] + h2 * th[e] + h3 * v[e + 1] + h4 * th[e + 1]
+def _pos(x, a, n):
+    """Macaulay bracket <x - a>^n  (zero for x < a)."""
+    return np.maximum(x - a, 0.0) ** n
 
 
 def transverse_diagrams(xq, pts, udls, rforces, rmoments, tol):
-    """Shear and bending moment (sagging positive) from statics."""
+    """Shear and bending moment (sagging positive) from equilibrium of a cut."""
     V = np.zeros_like(xq)
     M = np.zeros_like(xq)
     for xi, f in list(pts) + list(rforces):
@@ -294,6 +219,147 @@ def bar_diagram(xq, pts, reactions, tol):
     for xi, f in list(pts) + list(reactions):
         out -= f * (xi <= xq + tol)
     return out
+
+
+class TransversePlane:
+    """
+    One bending plane solved by DIRECT INTEGRATION of the Euler-Bernoulli equation
+
+        EI * v''(x) = M(x)            (v positive in the +direction of the loads, M sagging +)
+
+    M(x) is written from equilibrium of a cut, using unknown support reactions.
+    Integrating twice gives
+
+        EI * v'(x) = integral(M) + C1
+        EI * v(x)  = double integral(M) + C1*x + C2
+
+    The unknown reactions and the constants C1, C2 follow from
+        - v = 0 at every support,
+        - v' = 0 at every fixed (built-in) support,
+        - V = 0 and M = 0 at the free end x = L (equilibrium of the whole beam).
+    Statically determinate and indeterminate beams are therefore handled the same way.
+    Macaulay brackets <x-a>^n are only a compact way to write the piecewise integrals.
+    """
+
+    def __init__(self, L, EI, pinned, fixed, pts, udls):
+        self.L, self.EI = L, EI
+        self.pts, self.udls = list(pts), list(udls)
+        sup = list(pinned) + list(fixed)          # one reaction force per support
+        nR, nC = len(sup), len(fixed)             # nC reaction moments (fixed supports)
+        n = nR + nC + 2                           # + C1, C2
+        iC, i1, i2 = nR, nR + nC, nR + nC + 1
+
+        A = np.zeros((n, n))
+        b = np.zeros(n)
+        row = 0
+        for s in sup:                             # v(s) = 0
+            for j, sj in enumerate(sup):
+                A[row, j] = _pos(s, sj, 3) / 6.0
+            for j, sj in enumerate(fixed):
+                A[row, iC + j] = -_pos(s, sj, 2) / 2.0
+            A[row, i1] = s
+            A[row, i2] = 1.0
+            b[row] = -self._loads_v(s)
+            row += 1
+        for s in fixed:                           # v'(s) = 0
+            for j, sj in enumerate(sup):
+                A[row, j] = _pos(s, sj, 2) / 2.0
+            for j, sj in enumerate(fixed):
+                A[row, iC + j] = -_pos(s, sj, 1)
+            A[row, i1] = 1.0
+            b[row] = -self._loads_th(s)
+            row += 1
+        # free end x = L : V(L) = 0
+        A[row, :nR] = 1.0
+        b[row] = -(sum(F for _, F in self.pts) + sum(q * (bb - a) for a, bb, q in self.udls))
+        row += 1
+        # free end x = L : M(L) = 0
+        for j, sj in enumerate(sup):
+            A[row, j] = L - sj
+        for j in range(nC):
+            A[row, iC + j] = -1.0
+        b[row] = -(
+            sum(F * (L - xi) for xi, F in self.pts)
+            + sum(q * ((L - a) ** 2 - (L - bb) ** 2) / 2.0 for a, bb, q in self.udls)
+        )
+
+        scale = np.max(np.abs(A), axis=1)
+        scale[scale == 0.0] = 1.0
+        A, b = A / scale[:, None], b / scale
+        try:
+            if np.linalg.cond(A) > 1e13:
+                raise np.linalg.LinAlgError
+            x = np.linalg.solve(A, b)
+        except np.linalg.LinAlgError as exc:
+            raise ValueError("The beam is unstable with these supports.") from exc
+
+        self.rforces = [(sup[j], float(x[j])) for j in range(nR)]
+        self.rmoments = [(fixed[j], float(x[iC + j])) for j in range(nC)]
+        self.C1, self.C2 = float(x[i1]), float(x[i2])
+
+    # known (applied-load) part of EI*v and EI*v'
+    def _loads_v(self, x):
+        t = sum(F * _pos(x, xi, 3) / 6.0 for xi, F in self.pts)
+        t += sum(q * (_pos(x, a, 4) - _pos(x, b, 4)) / 24.0 for a, b, q in self.udls)
+        return t
+
+    def _loads_th(self, x):
+        t = sum(F * _pos(x, xi, 2) / 2.0 for xi, F in self.pts)
+        t += sum(q * (_pos(x, a, 3) - _pos(x, b, 3)) / 6.0 for a, b, q in self.udls)
+        return t
+
+    def deflection(self, xq):
+        out = self._loads_v(xq) + self.C1 * xq + self.C2
+        for sj, R in self.rforces:
+            out = out + R * _pos(xq, sj, 3) / 6.0
+        for sj, C in self.rmoments:
+            out = out - C * _pos(xq, sj, 2) / 2.0
+        return out / self.EI
+
+    def diagrams(self, xq, tol):
+        return transverse_diagrams(xq, self.pts, self.udls, self.rforces, self.rmoments, tol)
+
+
+class BarSolver:
+    """
+    Axial extension (stiffness EA) or torsion of a shaft (stiffness GJ) by direct integration:
+
+        EA * u'(x) = N(x)        or        GJ * phi'(x) = T(x)
+
+    N (or T) comes from equilibrium of a cut; one integration gives u (or phi). The reactions and
+    the integration constant follow from equilibrium and from u = 0 (or phi = 0) at each restraint.
+    """
+
+    def __init__(self, stiffness, restrained, pts):
+        self.k = stiffness
+        self.pts = list(pts)
+        r = sorted(set(round(float(p), 9) for p in restrained))
+        m = len(r)
+        if m == 0:
+            raise ValueError("Axial / torsional restraint is insufficient.")
+        A = np.zeros((m + 1, m + 1))
+        b = np.zeros(m + 1)
+        A[0, :m] = 1.0                                   # sum of reactions + applied = 0
+        b[0] = -sum(F for _, F in self.pts)
+        for i, ri in enumerate(r):                       # k*u(ri) = 0
+            for j, rj in enumerate(r):
+                A[1 + i, j] = -_pos(ri, rj, 1)
+            A[1 + i, m] = 1.0
+            b[1 + i] = sum(F * _pos(ri, xi, 1) for xi, F in self.pts)
+        try:
+            sol = np.linalg.solve(A, b)
+        except np.linalg.LinAlgError as exc:
+            raise ValueError("Axial / torsional restraint is insufficient.") from exc
+        self.reactions = [(r[j], float(sol[j])) for j in range(m)]
+        self.U0 = float(sol[m])
+
+    def displacement(self, xq):
+        out = np.full_like(xq, self.U0, dtype=float)
+        for xi, F in self.pts:
+            out -= F * _pos(xq, xi, 1)
+        for rj, R in self.reactions:
+            out -= R * _pos(xq, rj, 1)
+        return out / self.k
 
 
 class Solution:
@@ -317,14 +383,9 @@ class Solution:
         specials += [p[0] for p in m.points]
         specials += [u[0] for u in m.udls] + [u[1] for u in m.udls]
         specials = np.unique(np.round(specials, 9))
-        grid = np.linspace(0.0, L, 301)
-        keep = np.min(np.abs(grid[:, None] - specials[None, :]), axis=1) > 2e-3 * L
-        self.nodes = np.sort(np.concatenate([specials, grid[keep]]))
         self.specials = specials
-
-        # stations used for diagrams: nodes plus a point just before each special
         before = np.clip(specials - self.eps, 0.0, L)
-        self.xg = np.unique(np.concatenate([self.nodes, before]))
+        self.xg = np.unique(np.concatenate([np.linspace(0.0, L, 801), specials, before]))
 
         # load lists by plane
         self.pts_y = [(p[0], -p[1]) for p in m.points if p[1] != 0.0]
@@ -335,46 +396,38 @@ class Solution:
         self.udl_z = [(u[0], u[1], u[3]) for u in m.udls if u[3] != 0.0]
 
         # bending in X-Y (loads Fy, stiffness E*Izz) and in X-Z (loads Fz, E*Iyy)
-        self.uy, self.ry, self.cy = solve_transverse(
-            self.nodes, m.E * m.sec.Izz, m.pinned, m.fixed, self.pts_y, self.udl_y
-        )
-        self.uz, self.rz, self.cz = solve_transverse(
-            self.nodes, m.E * m.sec.Iyy, m.pinned, m.fixed, self.pts_z, self.udl_z
-        )
-        # axial force and torsion
-        self.ux, self.rx = solve_bar(
-            self.nodes, m.E * m.sec.A, m.axial_restraints, self.pts_x
-        )
-        torsion_restraints = list(m.pinned) + list(m.fixed)
-        self.phi, self.rt = solve_bar(
-            self.nodes, m.G * m.sec.J, torsion_restraints, self.pts_t
-        )
+        self.plane_y = TransversePlane(L, m.E * m.sec.Izz, m.pinned, m.fixed, self.pts_y, self.udl_y)
+        self.plane_z = TransversePlane(L, m.E * m.sec.Iyy, m.pinned, m.fixed, self.pts_z, self.udl_z)
+        # axial force and torsion (torsion restrained at every support)
+        self.axial = BarSolver(m.E * m.sec.A, m.axial_restraints, self.pts_x)
+        self.torsion = BarSolver(m.G * m.sec.J, list(m.pinned) + list(m.fixed), self.pts_t)
+
+        self.ry, self.cy = self.plane_y.rforces, self.plane_y.rmoments
+        self.rz, self.cz = self.plane_z.rforces, self.plane_z.rmoments
+        self.rx, self.rt = self.axial.reactions, self.torsion.reactions
 
     def at(self, xq):
         xq = np.atleast_1d(np.asarray(xq, dtype=float))
-        Vy, Mxy = transverse_diagrams(xq, self.pts_y, self.udl_y, self.ry, self.cy, self.tol)
-        Vz, Mxz = transverse_diagrams(xq, self.pts_z, self.udl_z, self.rz, self.cz, self.tol)
-        N = bar_diagram(xq, self.pts_x, self.rx, self.tol)
-        T = bar_diagram(xq, self.pts_t, self.rt, self.tol)
-        n = self.nodes
+        Vy, Mxy = self.plane_y.diagrams(xq, self.tol)
+        Vz, Mxz = self.plane_z.diagrams(xq, self.tol)
         return {
             "x": xq,
             "Vy": Vy,
             "Vz": Vz,
             "Mxy": Mxy,
             "Mxz": Mxz,
-            "N": N,
-            "T": T,
-            "v": hermite(xq, n, self.uy[0::2], self.uy[1::2]),
-            "w": hermite(xq, n, self.uz[0::2], self.uz[1::2]),
-            "u": np.interp(xq, n, self.ux),
-            "phi": np.interp(xq, n, self.phi),
+            "N": bar_diagram(xq, self.pts_x, self.rx, self.tol),
+            "T": bar_diagram(xq, self.pts_t, self.rt, self.tol),
+            "v": self.plane_y.deflection(xq),
+            "w": self.plane_z.deflection(xq),
+            "u": self.axial.displacement(xq),
+            "phi": self.torsion.displacement(xq),
         }
 
-    def stress_field(self, ev):
+    def stress_field(self, ev, fine=False):
         """Normal stress sigma_x at perimeter points for each station [Pa]."""
         s = self.model.sec
-        yp, zp = s.perimeter()
+        yp, zp = s.perimeter(n_circle=720) if fine else s.perimeter()
         sig = (
             ev["N"][:, None] / s.A
             - ev["Mxy"][:, None] * yp[None, :] / s.Izz
@@ -382,23 +435,52 @@ class Solution:
         )
         return sig, yp, zp
 
+    def stress_state(self, ev, fine=False):
+        """
+        Plane-stress state on the surface (sigma_x and torsional shear tau) and its Mohr's circle:
+            centre = sigma/2,  radius R = sqrt((sigma/2)^2 + tau^2)
+            sigma_1,2 = sigma/2 +/- R
+            absolute max shear = max(R, |sigma_1|/2, |sigma_2|/2)    (third principal stress = 0)
+        """
+        sig, yp, zp = self.stress_field(ev, fine)
+        tau = self.model.sec.tau_factor * np.abs(ev["T"])
+        t = tau[:, None] * np.ones_like(sig)
+        half = sig / 2.0
+        r = np.sqrt(half**2 + t**2)
+        s1, s2 = half + r, half - r
+        tmax = np.maximum(r, np.maximum(np.abs(s1), np.abs(s2)) / 2.0)
+        return {"sig": sig, "tau": t, "s1": s1, "s2": s2, "r": r, "tmax": tmax, "yp": yp, "zp": zp}
+
     def summary(self):
         ev = self.at(self.xg)
-        sig, _, _ = self.stress_field(ev)
-        sec = self.model.sec
-        sig_abs = np.abs(sig)
-        k = np.unravel_index(np.argmax(sig_abs), sig_abs.shape)
-        sig_station = sig_abs.max(axis=1)
-        tau = sec.tau_factor * np.abs(ev["T"])
-        vm = np.sqrt(sig_station**2 + 3.0 * tau**2)
+        st = self.stress_state(ev, fine=True)
+        k1 = np.unravel_index(np.argmax(st["s1"]), st["s1"].shape)
+        k2 = np.unravel_index(np.argmin(st["s2"]), st["s2"].shape)
+        kt = np.unravel_index(np.argmax(st["tmax"]), st["tmax"].shape)
+        ks = np.unravel_index(np.argmax(np.abs(st["sig"])), st["sig"].shape)
         defl = np.sqrt(ev["v"] ** 2 + ev["w"] ** 2)
+        crit = {
+            "x": float(ev["x"][kt[0]]),
+            "y": float(st["yp"][kt[1]]),
+            "z": float(st["zp"][kt[1]]),
+            "sigma": float(st["sig"][kt]),
+            "tau": float(st["tau"][kt]),
+            "s1": float(st["s1"][kt]),
+            "s2": float(st["s2"][kt]),
+            "r": float(st["r"][kt]),
+        }
         return {
             "ev": ev,
-            "sigma_max": float(sig_abs[k]),
-            "sigma_x_at": float(ev["x"][k[0]]),
-            "vm_max": float(vm.max()),
-            "vm_at": float(ev["x"][int(np.argmax(vm))]),
-            "tau_max": float(tau.max()),
+            "s1_max": float(st["s1"][k1]),
+            "s1_at": float(ev["x"][k1[0]]),
+            "s2_min": float(st["s2"][k2]),
+            "s2_at": float(ev["x"][k2[0]]),
+            "tmax_abs": float(st["tmax"][kt]),
+            "tmax_at": float(ev["x"][kt[0]]),
+            "crit": crit,
+            "sigma_max": float(np.abs(st["sig"][ks])),
+            "sigma_x_at": float(ev["x"][ks[0]]),
+            "tau_max": float(st["tau"].max()),
             "defl_max": float(defl.max()),
             "defl_at": float(ev["x"][int(np.argmax(defl))]),
             "v_max": float(np.abs(ev["v"]).max()),
@@ -562,6 +644,40 @@ class Arrows:
         return out
 
 
+def mohr_fig(sigma, tau, height=380):
+    """Mohr's circle for the plane-stress state (sigma_x, tau_xy), stresses in MPa."""
+    c = sigma / 2.0
+    R = float(np.hypot(c, tau))
+    s1, s2 = c + R, c - R
+    th = np.linspace(0.0, 2.0 * np.pi, 361)
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=c + R * np.cos(th), y=R * np.sin(th), mode="lines",
+                             line=dict(color=C_BLUE, width=2.5), name="Mohr's circle",
+                             hoverinfo="skip"))
+    fig.add_trace(go.Scatter(x=[sigma, 0.0], y=[tau, -tau], mode="lines+markers+text",
+                             line=dict(color=C_GREY, dash="dot"),
+                             marker=dict(size=10, color=C_ORANGE),
+                             text=["X (σx, τ)", "Y (0, −τ)"], textposition=["top right", "bottom left"],
+                             name="Stress state"))
+    fig.add_trace(go.Scatter(x=[s1, s2], y=[0.0, 0.0], mode="markers+text",
+                             marker=dict(size=11, color=C_RED, symbol="diamond"),
+                             text=[f"σ1 = {s1:.4g}", f"σ2 = {s2:.4g}"],
+                             textposition=["top center", "top center"], name="Principal stresses"))
+    fig.add_trace(go.Scatter(x=[c, c], y=[R, -R], mode="markers+text",
+                             marker=dict(size=11, color=C_GREEN, symbol="square"),
+                             text=[f"τmax = {R:.4g}", ""], textposition=["top center", "bottom center"],
+                             name="Max in-plane shear"))
+    fig.add_hline(y=0, line_width=1, line_color="rgba(128,128,128,0.6)")
+    fig.add_vline(x=0, line_width=1, line_color="rgba(128,128,128,0.6)")
+    fig.update_layout(
+        height=height, margin=dict(l=10, r=10, t=30, b=10),
+        xaxis=dict(title="Normal stress σ (MPa)", zeroline=False),
+        yaxis=dict(title="Shear stress τ (MPa)", scaleanchor="x", scaleratio=1, zeroline=False),
+        legend=dict(orientation="h", y=-0.2),
+    )
+    return fig
+
+
 def fmt(v, unit="", digits=4):
     return f"{v:.{digits}g}{(' ' + unit) if unit else ''}"
 
@@ -598,14 +714,25 @@ def build_3d(model: Model, sol: Solution, color_by, exag_pct, true_scale,
     Zv = cZ[:, None] + (yp[None, :] * sin_t + zp[None, :] * cos_t) * sv
     Xv = np.repeat(cX[:, None], npp, axis=1)
 
-    if color_by == "Normal stress σx":
-        sig, _, _ = sol.stress_field(ev)
-        vals = sig / 1e6
-        center_vals = ev["N"] / sec.A / 1e6
+    sc = ev["N"] / sec.A / 1e6                    # sigma_x at the section centre [MPa]
+    if color_by in ("Normal stress σx", "Max principal stress σ1"):
+        stt = sol.stress_state(ev)
+        if color_by == "Normal stress σx":
+            vals, center_vals = stt["sig"] / 1e6, sc
+            cbar_title, hover = "σx (MPa)", "σx = %{intensity:.4g} MPa<extra></extra>"
+        else:
+            vals, center_vals = stt["s1"] / 1e6, np.maximum(sc, 0.0)
+            cbar_title, hover = "σ1 (MPa)", "σ1 = %{intensity:.4g} MPa<extra></extra>"
         lim = float(np.abs(vals).max())
         lim = lim if lim > 1e-12 else 1.0
         cmin, cmax, cscale = -lim, lim, "RdBu_r"
-        cbar_title, hover = "σx (MPa)", "σx = %{intensity:.4g} MPa<extra></extra>"
+    elif color_by == "Max shear stress τmax":
+        stt = sol.stress_state(ev)
+        vals, center_vals = stt["tmax"] / 1e6, np.abs(sc) / 2.0
+        hi = float(vals.max())
+        hi = hi if hi > 1e-12 else 1.0
+        cmin, cmax, cscale = 0.0, hi, "YlOrRd"
+        cbar_title, hover = "τmax (MPa)", "τmax = %{intensity:.4g} MPa<extra></extra>"
     else:
         vals = np.repeat((disp * 1000.0)[:, None], npp, axis=1)
         center_vals = disp * 1000.0
@@ -867,19 +994,29 @@ def sidebar_inputs():
     sb.info(f"**E** = {E_GPa:g} GPa  ·  **ν** = {nu:g}  ·  **G** = {G_GPa:.1f} GPa")
 
     sb.markdown("## 📐 Cross-section")
-    shape = sb.radio("Shape", ["Rectangle", "Circle"], horizontal=True)
+    shape = sb.radio("Shape", ["Rectangle", "Circle"], index=1, horizontal=True)
     b_mm = h_mm = d_mm = 0.0
+    allow_roark = False
     if shape == "Rectangle":
         b_mm = sb.number_input("Width b, along Z (mm)", min_value=1.0, max_value=2000.0, value=50.0, step=5.0)
         h_mm = sb.number_input("Height h, along Y (mm)", min_value=1.0, max_value=2000.0, value=100.0, step=5.0)
+        allow_roark = sb.checkbox(
+            "Allow torque on a rectangle (Roark approximation)",
+            value=False,
+            help="Torsion of a rectangular section has no simple closed form. The standard approximations "
+                 "(Roark) are NOT part of APL104, whose torsion lecture covers circular shafts. "
+                 "Leave unticked to keep the analysis within the course.",
+        )
     else:
         d_mm = sb.number_input("Diameter d (mm)", min_value=1.0, max_value=2000.0, value=80.0, step=5.0)
     sec = make_section(shape, b_mm, h_mm, d_mm)
+    j_text = f"J = {sec.J * 1e8:.3f} cm⁴" if shape == "Circle" else (
+        f"J = {sec.J * 1e8:.3f} cm⁴ (Roark)" if allow_roark else "J: not used (circular shafts only)")
     sb.caption(
         f"A = {sec.A * 1e4:.3f} cm²  ·  I(zz) = {sec.Izz * 1e8:.3f} cm⁴  ·  "
-        f"I(yy) = {sec.Iyy * 1e8:.3f} cm⁴  ·  J = {sec.J * 1e8:.3f} cm⁴"
+        f"I(yy) = {sec.Iyy * 1e8:.3f} cm⁴  ·  {j_text}"
     )
-    return dict(beam_type=beam_type, L=float(L), s1=float(s1), s2=float(s2),
+    return dict(beam_type=beam_type, L=float(L), s1=float(s1), s2=float(s2), allow_roark=allow_roark,
                 material=material, E=E_GPa * 1e9, G=G_GPa * 1e9, nu=nu, sec=sec)
 
 
@@ -907,6 +1044,14 @@ def default_udls():
 
 def main():
     st.set_page_config(page_title="BeamLab 3D", page_icon="📐", layout="wide")
+    if go is None:
+        st.error(
+            "The **plotly** package is not installed in this environment. "
+            "Add a file named `requirements.txt` next to this app (same repository folder) "
+            "containing the lines `streamlit`, `plotly`, `numpy`, `pandas`, "
+            "then reboot the app. Locally, run `pip install plotly`."
+        )
+        st.stop()
     st.markdown(CSS, unsafe_allow_html=True)
     st.markdown(
         """
@@ -915,8 +1060,8 @@ def main():
           <p>Beam analysis under combined vertical, lateral, axial and torsional loading — with an interactive 3D view.</p>
           <div class="chips">
             <span class="chip">Biaxial bending</span><span class="chip">Axial force</span>
-            <span class="chip">Torsion</span><span class="chip">Multiple loads</span>
-            <span class="chip">5 support types</span><span class="chip">3D stress contour</span>
+            <span class="chip">Torsion</span><span class="chip">Mohr's circle</span>
+            <span class="chip">Multiple loads</span><span class="chip">5 support types</span>
           </div>
         </div>
         """,
@@ -975,6 +1120,15 @@ def main():
     if cfg["beam_type"] == "Overhanging" and not cfg["s1"] < cfg["s2"]:
         errors.append("Overhanging beam: support 1 must be to the left of support 2.")
 
+    has_torque = any(p[4] != 0.0 for p in points)
+    roark_used = has_torque and cfg["sec"].kind == "Rectangle"
+    if roark_used and not cfg["allow_roark"]:
+        errors.append(
+            "Torque on a rectangular section needs Roark's approximations, which are outside the APL104 "
+            "syllabus (it covers torsion of circular shafts). Choose the circular section, set the torque to "
+            "zero, or tick 'Allow torque on a rectangle (Roark approximation)' in the sidebar."
+        )
+
     if errors:
         with error_box:
             for e in errors:
@@ -994,6 +1148,11 @@ def main():
     with error_box:
         if not points and not udls:
             st.warning("No loads are applied yet. Add a point load or UDL in the Loads tab.")
+        if roark_used:
+            st.warning(
+                "Rectangular-section torsion uses **Roark's approximations**, which are not part of APL104. "
+                "Twist, torsional shear and the stresses that depend on them are approximate."
+            )
 
     S = sol.summary()
     ev = S["ev"]
@@ -1004,30 +1163,60 @@ def main():
     with tab_res:
         st.markdown('<div class="sectiontitle">Governing values</div>', unsafe_allow_html=True)
         c = st.columns(4)
-        c[0].metric("Max normal stress σx", fmt(S["sigma_max"] / 1e6, "MPa"),
-                    help=f"Axial + biaxial bending, at x = {S['sigma_x_at']:.3f} m")
-        c[1].metric("Max von Mises (conservative)", fmt(S["vm_max"] / 1e6, "MPa"),
-                    help="Combines the peak σx with the peak torsional shear at the same section. "
-                         "Conservative for rectangles.")
-        c[2].metric("Max bending deflection", fmt(S["defl_max"] * 1000, "mm"),
+        c[0].metric("Max principal stress σ1", fmt(S["s1_max"] / 1e6, "MPa"),
+                    help=f"Largest tensile principal stress on the surface, at x = {S['s1_at']:.3f} m")
+        c[1].metric("Min principal stress σ2", fmt(S["s2_min"] / 1e6, "MPa"),
+                    help=f"Most compressive principal stress on the surface, at x = {S['s2_at']:.3f} m")
+        c[2].metric("Max shear stress τmax", fmt(S["tmax_abs"] / 1e6, "MPa"),
+                    help=f"Absolute maximum shear from Mohr's circle (third principal stress = 0), "
+                         f"at x = {S['tmax_at']:.3f} m")
+        c[3].metric("Max bending deflection", fmt(S["defl_max"] * 1000, "mm"),
                     help=f"Resultant √(v² + w²), at x = {S['defl_at']:.3f} m")
-        c[3].metric("Max twist angle", fmt(np.degrees(S["phi_max"]), "°"))
+
+        c = st.columns(4)
+        c[0].metric("Max normal stress |σx|", fmt(S["sigma_max"] / 1e6, "MPa"),
+                    help=f"Axial + biaxial bending, at x = {S['sigma_x_at']:.3f} m")
+        c[1].metric("Max torsional shear τ", fmt(S["tau_max"] / 1e6, "MPa"))
+        c[2].metric("Max twist angle", fmt(np.degrees(S["phi_max"]), "°"))
+        c[3].metric("Max axial displacement", fmt(S["u_max"] * 1000, "mm"))
 
         c = st.columns(4)
         c[0].metric("Max deflection, Y (vertical)", fmt(S["v_max"] * 1000, "mm"))
         c[1].metric("Max deflection, Z (lateral)", fmt(S["w_max"] * 1000, "mm"))
-        c[2].metric("Max axial displacement", fmt(S["u_max"] * 1000, "mm"))
-        c[3].metric("Max torsional shear τ", fmt(S["tau_max"] / 1e6, "MPa"))
+        c[2].metric("Max shear Vy", fmt(S["Vy_max"], "N"))
+        c[3].metric("Max shear Vz", fmt(S["Vz_max"], "N"))
 
         c = st.columns(4)
-        c[0].metric("Max shear Vy", fmt(S["Vy_max"], "N"))
-        c[1].metric("Max shear Vz", fmt(S["Vz_max"], "N"))
-        c[2].metric("Max moment Mxy (about Z)", fmt(S["Mxy_max"], "N·m"))
-        c[3].metric("Max moment Mxz (about Y)", fmt(S["Mxz_max"], "N·m"))
+        c[0].metric("Max moment Mxy (about Z)", fmt(S["Mxy_max"], "N·m"))
+        c[1].metric("Max moment Mxz (about Y)", fmt(S["Mxz_max"], "N·m"))
+        c[2].metric("Max axial force N", fmt(S["N_max"], "N"))
+        c[3].metric("Max torque T", fmt(S["T_max"], "N·m"))
 
-        c = st.columns(4)
-        c[0].metric("Max axial force N", fmt(S["N_max"], "N"))
-        c[1].metric("Max torque T", fmt(S["T_max"], "N·m"))
+        crit = S["crit"]
+        st.markdown('<div class="sectiontitle">Mohr\'s circle at the critical point</div>',
+                    unsafe_allow_html=True)
+        mc1, mc2 = st.columns([1.5, 1])
+        with mc1:
+            if crit["r"] > 1e-9:
+                st.plotly_chart(mohr_fig(crit["sigma"] / 1e6, crit["tau"] / 1e6))
+            else:
+                st.info("No stress in the beam yet, so there is no Mohr's circle to draw.")
+        with mc2:
+            st.markdown(
+                f"**Critical point** (largest absolute shear stress)\n\n"
+                f"- Position: x = {crit['x']:.3f} m, on the surface at y = {crit['y'] * 1000:.1f} mm, "
+                f"z = {crit['z'] * 1000:.1f} mm\n"
+                f"- σx = {crit['sigma'] / 1e6:.4g} MPa and torsional shear τ = {crit['tau'] / 1e6:.4g} MPa\n"
+                f"- Circle centre = σx/2 = {crit['sigma'] / 2e6:.4g} MPa\n"
+                f"- Radius R = √((σx/2)² + τ²) = {crit['r'] / 1e6:.4g} MPa\n"
+                f"- σ1 = {crit['s1'] / 1e6:.4g} MPa, σ2 = {crit['s2'] / 1e6:.4g} MPa, σ3 = 0\n"
+                f"- τmax = max(R, |σ1|/2, |σ2|/2) = {S['tmax_abs'] / 1e6:.4g} MPa"
+            )
+            st.caption(
+                "Surface point, plane stress: σy = σz = 0. Transverse shear stress from V is neglected, "
+                "which is exact at the outer fibres of the bending stress but ignores the shear "
+                "from V near the neutral axis."
+            )
 
         st.markdown('<div class="sectiontitle">Support reactions</div>', unsafe_allow_html=True)
         rt = sol.reaction_table()
@@ -1043,7 +1232,8 @@ def main():
     # ---------------- 3D ----------------
     with tab_3d:
         c1, c2, c3 = st.columns([1.2, 1.6, 2.2])
-        color_by = c1.radio("Colour by", ["Normal stress σx", "Total displacement"])
+        color_by = c1.radio("Colour by", ["Normal stress σx", "Max principal stress σ1",
+                                          "Max shear stress τmax", "Total displacement"])
         exag = c2.slider("Deformation exaggeration (%)", 0, 100, 35,
                          help="100% shows the maximum deflection as 25% of the beam length "
                               "and the maximum twist as 60°.")
@@ -1059,7 +1249,8 @@ def main():
         st.caption(
             f"Displacements are drawn ×{sd:,.4g} and twist ×{stw:,.4g}. "
             + (f"The cross-section is drawn {sv:,.3g}× larger than real so it stays visible. " if sv > 1.0001 else "")
-            + "Drag to rotate, scroll to zoom. Red = tension and blue = compression in the stress view."
+            + "Drag to rotate, scroll to zoom. Red = tension and blue = compression in the stress views "
+              "(σ1 and τmax come from Mohr's circle at each surface point)."
         )
 
     # ---------------- Diagrams ----------------
@@ -1100,7 +1291,8 @@ def main():
                              "I about Y (X-Z bending)", "Torsion constant J"],
                     "Value": [cfg["beam_type"], f"{L:g} m", cfg["material"], f"{model.E / 1e9:.1f} GPa",
                               f"{model.G / 1e9:.1f} GPa", sec.label, f"{sec.A:.6e} m²",
-                              f"{sec.Izz:.6e} m⁴", f"{sec.Iyy:.6e} m⁴", f"{sec.J:.6e} m⁴"],
+                              f"{sec.Izz:.6e} m⁴", f"{sec.Iyy:.6e} m⁴",
+                              f"{sec.J:.6e} m⁴" + (" (Roark approx.)" if sec.torsion_basis == "roark" else "")],
                 }
             ).set_index("Item"))
         with c2:
@@ -1115,15 +1307,28 @@ def main():
         with st.expander("Assumptions and limitations", expanded=True):
             st.markdown(
                 """
-- Linear-elastic, small-displacement **Euler-Bernoulli** beam theory; constant prismatic section.
-- Vertical and lateral loads act through the section **shear centre**, so they cause no twist. Torque is
-  applied separately. Axial loads act through the centroid (no eccentricity).
-- Supports restrain deflection in both planes and **twist** (fork-type). Axial motion is restrained at the
-  left-most support (at both ends for Fixed-Fixed).
+**Method** (all from APL104 topics)
+- Reactions, shear force and bending moment from **equilibrium of a cut section**.
+- Deflection by **direct integration of EI·v'' = M(x)** (Euler-Bernoulli), with v = 0 at supports and
+  v' = 0 at fixed supports. The same procedure solves statically indeterminate beams (fixed-fixed,
+  propped cantilever, overhanging). Axial extension and twist integrate EA·u' = N and GJ·φ' = T.
+- Normal stress from the **flexure formula**, with biaxial bending about the principal axes of the section.
+- **Principal stresses and maximum shear stress from Mohr's circle** at surface points
+  (σx and torsional shear τ; σy = σz = 0).
+
+**Assumptions**
+- Linear-elastic, small displacements, constant prismatic section.
+- Vertical and lateral loads act through the **shear centre**, so they cause no twist. Axial loads act
+  through the centroid (no eccentricity).
+- Supports restrain deflection in both planes and **twist**. Axial motion is restrained at the left-most
+  support (at both ends for Fixed-Fixed).
 - Bending, axial and torsional behaviour are **superposed** (no P-Δ, no buckling, no coupling).
-- Torsion uses **St-Venant** theory: warping restraint and transverse-shear stress are neglected. The
-  rectangular torsion constant and maximum shear use standard Roark approximations.
-- The von Mises value pairs the peak normal stress with the peak torsional shear, which is conservative.
+- Torsion: circular shafts (τ = T·r/J). Warping is neglected. A **rectangular** section can carry torque
+  only if you tick the Roark option, which is *outside* APL104 and approximate.
+- Transverse shear stress from V is not included in the stress state; Timoshenko shear deformation is
+  neglected (Euler-Bernoulli only).
+- The 3D view exaggerates deformation and enlarges the cross-section for visibility; this does not
+  change any result.
 - Educational tool: not a substitute for code-compliant structural design or independent checking.
                 """
             )
