@@ -3,6 +3,8 @@ BeamLab 3D - Beam analysis with biaxial bending, axial force and torsion.
 
 Run with:   streamlit run beamlab_3d.py
 
+Cross-section: solid circular shaft (diameter set in the sidebar).
+
 Coordinate system (right-handed)
     X : along the beam axis
     Y : vertical (up)
@@ -24,8 +26,6 @@ Method (APL104 topics)
     Hooke's law                        -> u' = N / (E A),  G = E / (2(1+nu))
     Stress transformation, Mohr's      -> principal stresses and maximum shear stress
     circle
-    Optional, outside APL104: Roark's approximations for rectangular-section torsion
-    (disabled unless the user ticks the option in the sidebar).
 """
 
 from __future__ import annotations
@@ -94,63 +94,28 @@ C_GREY = "#7f8c8d"
 
 @dataclass
 class Section:
-    kind: str
-    A: float        # area [m^2]
-    Izz: float      # second moment about Z, resists bending in the X-Y plane [m^4]
-    Iyy: float      # second moment about Y, resists bending in the X-Z plane [m^4]
-    J: float        # torsion constant [m^4]
-    cy: float       # half-extent in Y [m]
-    cz: float       # half-extent in Z [m]
-    tau_factor: float   # tau_max = tau_factor * T  [1/m^3]
+    """Solid circular section: flexure formula (I = pi d^4 / 64) and torsion of shafts (J = pi d^4 / 32)."""
+    d: float            # diameter [m]
+    A: float            # area [m^2]
+    Izz: float          # second moment about Z, resists bending in the X-Y plane [m^4]
+    Iyy: float          # second moment about Y, resists bending in the X-Z plane [m^4] (= Izz)
+    J: float            # polar moment of area [m^4]
+    cy: float           # radius [m]
+    cz: float           # radius [m]
+    tau_factor: float   # surface torsional shear: tau = tau_factor * T = T r / J  [1/m^3]
     label: str = ""
-    torsion_basis: str = "exact"   # "exact" (circle, tau = T r / J) or "roark" (rectangle approximation)
 
-    def perimeter(self, per_edge: int = 8, n_circle: int = 56):
+    def perimeter(self, n_circle: int = 56):
         """Points (y, z) around the outline of the section."""
-        if self.kind == "Circle":
-            ang = np.linspace(0.0, 2.0 * np.pi, n_circle, endpoint=False)
-            return self.cy * np.cos(ang), self.cz * np.sin(ang)
-        corners = np.array(
-            [
-                [self.cy, -self.cz],
-                [self.cy, self.cz],
-                [-self.cy, self.cz],
-                [-self.cy, -self.cz],
-            ]
-        )
-        ys, zs = [], []
-        t = np.linspace(0.0, 1.0, per_edge, endpoint=False)
-        for k in range(4):
-            p0, p1 = corners[k], corners[(k + 1) % 4]
-            ys.append(p0[0] + t * (p1[0] - p0[0]))
-            zs.append(p0[1] + t * (p1[1] - p0[1]))
-        return np.concatenate(ys), np.concatenate(zs)
+        ang = np.linspace(0.0, 2.0 * np.pi, n_circle, endpoint=False)
+        return self.cy * np.cos(ang), self.cz * np.sin(ang)
 
 
-def make_section(kind: str, b_mm: float, h_mm: float, d_mm: float) -> Section:
-    if kind == "Rectangle":
-        b, h = b_mm / 1000.0, h_mm / 1000.0          # b along Z, h along Y
-        long_, short_ = max(b, h), min(b, h)
-        J = long_ * short_**3 * (
-            1.0 / 3.0 - 0.21 * (short_ / long_) * (1.0 - short_**4 / (12.0 * long_**4))
-        )
-        tau_factor = (3.0 * long_ + 1.8 * short_) / (long_**2 * short_**2)
-        return Section(
-            kind="Rectangle",
-            A=b * h,
-            Izz=b * h**3 / 12.0,
-            Iyy=h * b**3 / 12.0,
-            J=J,
-            cy=h / 2.0,
-            cz=b / 2.0,
-            tau_factor=tau_factor,
-            label=f"Rectangle {b_mm:g} × {h_mm:g} mm (width Z × height Y)",
-            torsion_basis="roark",
-        )
+def make_section(d_mm: float) -> Section:
     d = d_mm / 1000.0
     I = np.pi * d**4 / 64.0
     return Section(
-        kind="Circle",
+        d=d,
         A=np.pi * d**2 / 4.0,
         Izz=I,
         Iyy=I,
@@ -158,7 +123,7 @@ def make_section(kind: str, b_mm: float, h_mm: float, d_mm: float) -> Section:
         cy=d / 2.0,
         cz=d / 2.0,
         tau_factor=16.0 / (np.pi * d**3),
-        label=f"Circle Ø {d_mm:g} mm",
+        label=f"Solid circle, diameter {d_mm:g} mm",
     )
 
 
@@ -994,29 +959,13 @@ def sidebar_inputs():
     sb.info(f"**E** = {E_GPa:g} GPa  ·  **ν** = {nu:g}  ·  **G** = {G_GPa:.1f} GPa")
 
     sb.markdown("## 📐 Cross-section")
-    shape = sb.radio("Shape", ["Rectangle", "Circle"], index=1, horizontal=True)
-    b_mm = h_mm = d_mm = 0.0
-    allow_roark = False
-    if shape == "Rectangle":
-        b_mm = sb.number_input("Width b, along Z (mm)", min_value=1.0, max_value=2000.0, value=50.0, step=5.0)
-        h_mm = sb.number_input("Height h, along Y (mm)", min_value=1.0, max_value=2000.0, value=100.0, step=5.0)
-        allow_roark = sb.checkbox(
-            "Allow torque on a rectangle (Roark approximation)",
-            value=False,
-            help="Torsion of a rectangular section has no simple closed form. The standard approximations "
-                 "(Roark) are NOT part of APL104, whose torsion lecture covers circular shafts. "
-                 "Leave unticked to keep the analysis within the course.",
-        )
-    else:
-        d_mm = sb.number_input("Diameter d (mm)", min_value=1.0, max_value=2000.0, value=80.0, step=5.0)
-    sec = make_section(shape, b_mm, h_mm, d_mm)
-    j_text = f"J = {sec.J * 1e8:.3f} cm⁴" if shape == "Circle" else (
-        f"J = {sec.J * 1e8:.3f} cm⁴ (Roark)" if allow_roark else "J: not used (circular shafts only)")
+    d_mm = sb.number_input("Diameter d (mm)", min_value=1.0, max_value=2000.0, value=80.0, step=5.0)
+    sec = make_section(d_mm)
     sb.caption(
-        f"A = {sec.A * 1e4:.3f} cm²  ·  I(zz) = {sec.Izz * 1e8:.3f} cm⁴  ·  "
-        f"I(yy) = {sec.Iyy * 1e8:.3f} cm⁴  ·  {j_text}"
+        f"Solid circle  ·  A = {sec.A * 1e4:.3f} cm²  ·  I = {sec.Izz * 1e8:.3f} cm⁴  ·  "
+        f"J = {sec.J * 1e8:.3f} cm⁴"
     )
-    return dict(beam_type=beam_type, L=float(L), s1=float(s1), s2=float(s2), allow_roark=allow_roark,
+    return dict(beam_type=beam_type, L=float(L), s1=float(s1), s2=float(s2),
                 material=material, E=E_GPa * 1e9, G=G_GPa * 1e9, nu=nu, sec=sec)
 
 
@@ -1120,15 +1069,6 @@ def main():
     if cfg["beam_type"] == "Overhanging" and not cfg["s1"] < cfg["s2"]:
         errors.append("Overhanging beam: support 1 must be to the left of support 2.")
 
-    has_torque = any(p[4] != 0.0 for p in points)
-    roark_used = has_torque and cfg["sec"].kind == "Rectangle"
-    if roark_used and not cfg["allow_roark"]:
-        errors.append(
-            "Torque on a rectangular section needs Roark's approximations, which are outside the APL104 "
-            "syllabus (it covers torsion of circular shafts). Choose the circular section, set the torque to "
-            "zero, or tick 'Allow torque on a rectangle (Roark approximation)' in the sidebar."
-        )
-
     if errors:
         with error_box:
             for e in errors:
@@ -1148,11 +1088,6 @@ def main():
     with error_box:
         if not points and not udls:
             st.warning("No loads are applied yet. Add a point load or UDL in the Loads tab.")
-        if roark_used:
-            st.warning(
-                "Rectangular-section torsion uses **Roark's approximations**, which are not part of APL104. "
-                "Twist, torsional shear and the stresses that depend on them are approximate."
-            )
 
     S = sol.summary()
     ev = S["ev"]
@@ -1288,11 +1223,11 @@ def main():
                 {
                     "Item": ["Support condition", "Length", "Material", "Young's modulus E",
                              "Shear modulus G", "Cross-section", "Area A", "I about Z (X-Y bending)",
-                             "I about Y (X-Z bending)", "Torsion constant J"],
+                             "I about Y (X-Z bending)", "Polar moment J"],
                     "Value": [cfg["beam_type"], f"{L:g} m", cfg["material"], f"{model.E / 1e9:.1f} GPa",
                               f"{model.G / 1e9:.1f} GPa", sec.label, f"{sec.A:.6e} m²",
                               f"{sec.Izz:.6e} m⁴", f"{sec.Iyy:.6e} m⁴",
-                              f"{sec.J:.6e} m⁴" + (" (Roark approx.)" if sec.torsion_basis == "roark" else "")],
+                              f"{sec.J:.6e} m⁴"],
                 }
             ).set_index("Item"))
         with c2:
@@ -1307,7 +1242,7 @@ def main():
         with st.expander("Assumptions and limitations", expanded=True):
             st.markdown(
                 """
-**Method** (all from APL104 topics)
+**Method** 
 - Reactions, shear force and bending moment from **equilibrium of a cut section**.
 - Deflection by **direct integration of EI·v'' = M(x)** (Euler-Bernoulli), with v = 0 at supports and
   v' = 0 at fixed supports. The same procedure solves statically indeterminate beams (fixed-fixed,
@@ -1323,10 +1258,9 @@ def main():
 - Supports restrain deflection in both planes and **twist**. Axial motion is restrained at the left-most
   support (at both ends for Fixed-Fixed).
 - Bending, axial and torsional behaviour are **superposed** (no P-Δ, no buckling, no coupling).
-- Torsion: circular shafts (τ = T·r/J). Warping is neglected. A **rectangular** section can carry torque
-  only if you tick the Roark option, which is *outside* APL104 and approximate.
-- Transverse shear stress from V is not included in the stress state; Timoshenko shear deformation is
-  neglected (Euler-Bernoulli only).
+- Cross-section: solid circular shaft. Torsion follows τ = T·r/J and φ' = T/(G·J); a circular section
+  does not warp. Both bending planes have the same stiffness (Izz = Iyy).
+- Transverse shear stress from V is not included in the stress state; Euler-Bernoulli only used.
 - The 3D view exaggerates deformation and enlarges the cross-section for visibility; this does not
   change any result.
 - Educational tool: not a substitute for code-compliant structural design or independent checking.
