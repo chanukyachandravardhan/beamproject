@@ -83,6 +83,10 @@ w_start = 0.0
 w_end = 0.0
 w_peak = 0.0
 parabola_shape = "increasing"
+use_coeffs = False
+coef_A = 0.0
+coef_B = 0.0
+coef_C = 0.0
 a = 0.0
 b_load = L
 
@@ -125,52 +129,142 @@ else:
 
     elif load_type == LINEAR:
 
-        w_start = st.sidebar.number_input(
-            "Intensity at start, w₁ (N/m)",
-            min_value=0.0,
-            max_value=1_000_000.0,
-            value=0.0,
-            step=50.0,
-            key="linear_start_intensity"
+        input_mode = st.sidebar.radio(
+            "Define linear load by",
+            ["End intensities", "Equation coefficients"],
+            key="linear_input_mode"
         )
+        use_coeffs = input_mode == "Equation coefficients"
 
-        w_end = st.sidebar.number_input(
-            "Intensity at end, w₂ (N/m)",
-            min_value=0.0,
-            max_value=1_000_000.0,
-            value=500.0,
-            step=50.0,
-            key="linear_end_intensity"
-        )
+        if use_coeffs:
 
-        st.sidebar.caption(
-            "Intensity varies linearly from w₁ to w₂. "
-            "Set w₁ = 0 or w₂ = 0 for a triangular load."
-        )
+            st.sidebar.markdown("**q(x) = m·x + k**")
+
+            coef_B = st.sidebar.number_input(
+                "Slope, m (N/m per m)",
+                min_value=-1_000_000.0,
+                max_value=1_000_000.0,
+                value=125.0,
+                step=10.0,
+                format="%.4f",
+                key="linear_coef_m"
+            )
+
+            coef_C = st.sidebar.number_input(
+                "Constant, k (N/m)",
+                min_value=-1_000_000.0,
+                max_value=1_000_000.0,
+                value=0.0,
+                step=10.0,
+                format="%.4f",
+                key="linear_coef_k"
+            )
+
+            st.sidebar.caption(
+                "x is measured in metres from the left end "
+                "(the fixed support for a cantilever). The equation "
+                "applies only between the load start and end positions. "
+                "Negative intensity means an upward load."
+            )
+
+        else:
+
+            w_start = st.sidebar.number_input(
+                "Intensity at start, w₁ (N/m)",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=0.0,
+                step=50.0,
+                key="linear_start_intensity"
+            )
+
+            w_end = st.sidebar.number_input(
+                "Intensity at end, w₂ (N/m)",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=500.0,
+                step=50.0,
+                key="linear_end_intensity"
+            )
+
+            st.sidebar.caption(
+                "Intensity varies linearly from w₁ to w₂. "
+                "Set w₁ = 0 or w₂ = 0 for a triangular load."
+            )
 
     else:
 
-        w_peak = st.sidebar.number_input(
-            "Peak intensity, w_max (N/m)",
-            min_value=0.0,
-            max_value=1_000_000.0,
-            value=500.0,
-            step=50.0,
-            key="parabolic_peak_intensity"
+        input_mode = st.sidebar.radio(
+            "Define parabolic load by",
+            ["Peak intensity & shape", "Equation coefficients"],
+            key="parabolic_input_mode"
         )
+        use_coeffs = input_mode == "Equation coefficients"
 
-        shape_label = st.sidebar.selectbox(
-            "Parabola shape",
-            list(PARABOLA_SHAPES.keys())
-        )
-        parabola_shape = PARABOLA_SHAPES[shape_label]
+        if use_coeffs:
 
-        st.sidebar.caption(
-            "Increasing: w = w_max·s²  |  "
-            "Decreasing: w = w_max·(1−s)²  |  "
-            "Symmetric: w = 4·w_max·s·(1−s),  "
-            "where s is the fractional position along the loaded region."
-        )
+            st.sidebar.markdown("**q(x) = A·x² + B·x + C**")
+
+            coef_A = st.sidebar.number_input(
+                "A (N/m per m²)",
+                min_value=-1_000_000.0,
+                max_value=1_000_000.0,
+                value=31.25,
+                step=1.0,
+                format="%.4f",
+                key="parabolic_coef_A"
+            )
+
+            coef_B = st.sidebar.number_input(
+                "B (N/m per m)",
+                min_value=-1_000_000.0,
+                max_value=1_000_000.0,
+                value=0.0,
+                step=1.0,
+                format="%.4f",
+                key="parabolic_coef_B"
+            )
+
+            coef_C = st.sidebar.number_input(
+                "C (N/m)",
+                min_value=-1_000_000.0,
+                max_value=1_000_000.0,
+                value=0.0,
+                step=10.0,
+                format="%.4f",
+                key="parabolic_coef_C"
+            )
+
+            st.sidebar.caption(
+                "x is measured in metres from the left end "
+                "(the fixed support for a cantilever). The equation "
+                "applies only between the load start and end positions. "
+                "Negative intensity means an upward load."
+            )
+
+        else:
+
+            w_peak = st.sidebar.number_input(
+                "Peak intensity, w_max (N/m)",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=500.0,
+                step=50.0,
+                key="parabolic_peak_intensity"
+            )
+
+            shape_label = st.sidebar.selectbox(
+                "Parabola shape",
+                list(PARABOLA_SHAPES.keys())
+            )
+            parabola_shape = PARABOLA_SHAPES[shape_label]
+
+            st.sidebar.caption(
+                "Increasing: w = w_max·s²  |  "
+                "Decreasing: w = w_max·(1−s)²  |  "
+                "Symmetric: w = 4·w_max·s·(1−s),  "
+                "where s is the fractional position along the loaded region."
+            )
 
     st.sidebar.caption(
         "The distributed load acts downward between its start "
@@ -310,7 +404,12 @@ def distributed_intensity(xx):
     # s = fractional position along the loaded region (0 to 1).
     s = np.clip((xx - a) / (b_load - a), 0.0, 1.0)
 
-    if load_type == LINEAR:
+    if load_type in VARYING_TYPES and use_coeffs:
+        # Equation mode: q(x) = A*x^2 + B*x + C (A = 0 for linear),
+        # with x measured from the left end of the beam.
+        q = coef_A * xx**2 + coef_B * xx + coef_C
+
+    elif load_type == LINEAR:
         q = w_start + (w_end - w_start) * s
 
     elif load_type == PARABOLIC:
@@ -326,6 +425,21 @@ def distributed_intensity(xx):
 
     return np.where(inside, q, 0.0)
 
+
+if load_type in VARYING_TYPES and use_coeffs:
+
+    q_check = distributed_intensity(np.linspace(a, b_load, 400))
+
+    if np.max(np.abs(q_check)) == 0:
+        st.warning(
+            "The load equation gives zero intensity over the "
+            "loaded region, so there is no applied load."
+        )
+    elif np.min(q_check) < 0:
+        st.warning(
+            "The load equation gives negative intensity somewhere "
+            "in the loaded region. Negative values act upward."
+        )
 
 special_positions = [0.0, float(L)]
 
@@ -372,14 +486,16 @@ if load_type in VARYING_TYPES:
     # Centroid (line of action of the resultant) of the load.
     first_moment = float(np.sum(q_mid * x_mid * dx))
 
-    if total_load_numeric > 0:
+    if abs(total_load_numeric) > 1e-12:
         load_centroid = first_moment / total_load_numeric
 
     if beam_type == "Simply Supported":
 
         # Reactions from equilibrium.
-        RA = total_load_numeric * (L - load_centroid) / L
-        RB = total_load_numeric * load_centroid / L
+        # (Moments about A give RB; this also works when the
+        # net load is zero but its moment is not.)
+        RB = first_moment / L
+        RA = total_load_numeric - RB
 
         # Shear force: V = RA - Q(x).
         V = RA - Q
@@ -676,6 +792,32 @@ elif load_type == UDL:
     st.write(f"**Loaded region:** {a:.3f} m to {b_load:.3f} m")
     st.write(f"**Total applied load:** {total_load:.3f} N")
 
+elif load_type in VARYING_TYPES and use_coeffs:
+
+    if load_type == LINEAR:
+        st.write(
+            f"**Load equation:** q(x) = {coef_B:.4g}·x + {coef_C:.4g}  (N/m)"
+        )
+    else:
+        st.write(
+            f"**Load equation:** q(x) = {coef_A:.4g}·x² + "
+            f"{coef_B:.4g}·x + {coef_C:.4g}  (N/m)"
+        )
+
+    q_region = distributed_intensity(np.linspace(a, b_load, 400))
+
+    st.write(
+        f"**Intensity range over loaded region:** "
+        f"{q_region.min():.3f} to {q_region.max():.3f} N/m"
+    )
+    st.write(f"**Loaded region:** {a:.3f} m to {b_load:.3f} m")
+    st.write(f"**Total applied load:** {total_load:.3f} N")
+
+    if abs(total_load) > 1e-12:
+        st.write(
+            f"**Resultant acts at:** {load_centroid:.3f} m from the left end"
+        )
+
 elif load_type == LINEAR:
 
     st.write(f"**Intensity at start (w₁):** {w_start:.3f} N/m")
@@ -769,7 +911,7 @@ else:
 
     envelope_x = np.linspace(a, b_load, 400)
     envelope_q = distributed_intensity(envelope_x)
-    q_max = float(np.max(envelope_q))
+    q_max = float(np.max(np.abs(envelope_q)))
 
     if q_max > 0:
 
@@ -781,11 +923,11 @@ else:
 
         for pos, arrow_h in zip(arrow_positions, arrow_heights):
 
-            if arrow_h > 0.02:
+            if abs(arrow_h) > 0.02:
 
                 ax.annotate(
                     "",
-                    xy=(pos, -0.04),
+                    xy=(pos, 0.04 if arrow_h < 0 else -0.04),
                     xytext=(pos, arrow_h),
                     arrowprops=dict(
                         arrowstyle="->",
@@ -803,7 +945,14 @@ else:
             linewidth=2
         )
 
-        if load_type == UDL:
+        if load_type in VARYING_TYPES and use_coeffs:
+            if load_type == LINEAR:
+                load_label = f"q(x) = {coef_B:.3g}x + {coef_C:.3g}"
+            else:
+                load_label = (
+                    f"q(x) = {coef_A:.3g}x² + {coef_B:.3g}x + {coef_C:.3g}"
+                )
+        elif load_type == UDL:
             load_label = f"UDL = {w:.1f} N/m"
         elif load_type == LINEAR:
             load_label = f"w = {w_start:.1f} → {w_end:.1f} N/m"
