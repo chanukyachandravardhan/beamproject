@@ -11,7 +11,7 @@ st.set_page_config(
 
 
 def beam_page():
-    st.title(" BeamLab_2 ")
+    st.title(" BeamLab ")
     st.subheader("Beam Deflection and Stress Simulator")
 
     st.write(
@@ -1111,7 +1111,7 @@ def beam_page():
 
 
 def truss_page():
-    st.title("🏗️ 2D Truss / Frame Analysis")
+    st.title("2D Truss / Frame Analysis")
     st.write(
         "Rigid-jointed 2D frame solved by the direct stiffness method. Nodal "
         "forces grow linearly with time, F(t) = rate × t. Each member's stress "
