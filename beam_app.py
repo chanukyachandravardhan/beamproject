@@ -150,33 +150,63 @@ st.sidebar.info(
 
 st.sidebar.header("Cross-Section")
 
-b_mm = st.sidebar.number_input(
-    "Width (mm)",
-    min_value=1.0,
-    max_value=1000.0,
-    value=50.0,
-    step=5.0,
-    key="section_width"
+section_type = st.sidebar.selectbox(
+    "Select cross-section shape",
+    ["Rectangle", "Solid Circle", "Hollow Circle"]
 )
 
-h_mm = st.sidebar.number_input(
-    "Height (mm)",
-    min_value=1.0,
-    max_value=1000.0,
-    value=100.0,
-    step=5.0,
-    key="section_height"
-)
+if section_type == "Rectangle":
+    b_mm = st.sidebar.number_input(
+        "Width (mm)", min_value=1.0, max_value=1000.0,
+        value=50.0, step=5.0, key="section_width"
+    )
+    h_mm = st.sidebar.number_input(
+        "Height (mm)", min_value=1.0, max_value=1000.0,
+        value=100.0, step=5.0, key="section_height"
+    )
 
-# Convert millimetres to metres.
-b = b_mm / 1000.0
-h = h_mm / 1000.0
+    # Rectangle: I = b*h^3/12; c = h/2.
+    b = b_mm / 1000.0
+    h = h_mm / 1000.0
+    I = b * h**3 / 12.0
+    c = h / 2.0
+    section_description = f"Rectangle: {b_mm:.1f} mm × {h_mm:.1f} mm"
 
-# Rectangular cross-section.
-I = b * h**3 / 12.0
+elif section_type == "Solid Circle":
+    diameter_mm = st.sidebar.number_input(
+        "Diameter (mm)", min_value=1.0, max_value=1000.0,
+        value=50.0, step=5.0, key="solid_circle_diameter"
+    )
 
-# Distance from neutral axis to outermost fibre.
-c = h / 2.0
+    # Solid circle: I = pi*d^4/64; c = d/2.
+    diameter = diameter_mm / 1000.0
+    I = np.pi * diameter**4 / 64.0
+    c = diameter / 2.0
+    section_description = f"Solid circle: diameter {diameter_mm:.1f} mm"
+
+else:
+    outer_diameter_mm = st.sidebar.number_input(
+        "Outer diameter (mm)", min_value=1.0, max_value=1000.0,
+        value=60.0, step=5.0, key="hollow_outer_diameter"
+    )
+    inner_diameter_mm = st.sidebar.number_input(
+        "Inner diameter (mm)", min_value=0.0, max_value=999.0,
+        value=30.0, step=5.0, key="hollow_inner_diameter"
+    )
+
+    if inner_diameter_mm >= outer_diameter_mm:
+        st.error("Inner diameter must be smaller than outer diameter.")
+        st.stop()
+
+    # Hollow circle: I = pi*(D^4-d^4)/64; c = D/2.
+    outer_diameter = outer_diameter_mm / 1000.0
+    inner_diameter = inner_diameter_mm / 1000.0
+    I = np.pi * (outer_diameter**4 - inner_diameter**4) / 64.0
+    c = outer_diameter / 2.0
+    section_description = (
+        f"Hollow circle: outer diameter {outer_diameter_mm:.1f} mm, "
+        f"inner diameter {inner_diameter_mm:.1f} mm"
+    )
 
 
 if load_type == "Uniformly Distributed Load (UDL)":
@@ -705,7 +735,7 @@ st.write(f"**Beam type:** {beam_type}")
 st.write(f"**Load type:** {load_type}")
 st.write(f"**Material:** {material}")
 st.write(f"**Young's modulus:** {E / 1e9:.1f} GPa")
-st.write(f"**Cross-section:** {b_mm:.1f} mm × {h_mm:.1f} mm")
+st.write(f"**Cross-section:** {section_description}")
 st.write(f"**Second moment of area:** {I:.6e} m⁴")
 st.write(f"**Maximum bending stress:** {stress_max / 1e6:.4f} MPa")
 st.write(f"**Maximum deflection:** {deflection_max * 1000:.4f} mm")
@@ -713,7 +743,7 @@ st.write(f"**Maximum deflection:** {deflection_max * 1000:.4f} mm")
 st.info(
     "This educational simulator assumes linear-elastic "
     "Euler-Bernoulli beam behavior, small deflections, "
-    "ideal supports, and a constant rectangular cross-section. "
+    "ideal supports, and a constant cross-section. "
     "Material properties are approximate. This application "
     "is not a substitute for professional structural design "
     "or independent safety verification."
