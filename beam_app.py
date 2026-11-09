@@ -13,8 +13,9 @@ st.subheader("Beam Deflection and Stress Simulator")
 
 st.write(
     "Analyze beam reactions, shear forces, bending moments, "
-    "bending stress, and elastic deflection under point loads "
-    "and uniformly distributed loads."
+    "bending stress, and elastic deflection under point loads, "
+    "uniformly distributed loads, linearly varying loads, "
+    "and parabolic loads."
 )
 
 st.divider()
@@ -28,6 +29,29 @@ MATERIALS = {
     "Brass": 100e9,
     "Titanium Alloy": 110e9,
 }
+
+# Load type names (defined once so they are not mistyped later).
+POINT = "Point Load"
+UDL = "Uniformly Distributed Load (UDL)"
+LINEAR = "Linearly Varying Load (Triangular / Trapezoidal)"
+PARABOLIC = "Parabolic Load"
+
+VARYING_TYPES = [LINEAR, PARABOLIC]
+DISTRIBUTED_TYPES = [UDL, LINEAR, PARABOLIC]
+
+PARABOLA_SHAPES = {
+    "Increasing  (zero at start, peak at end)": "increasing",
+    "Decreasing  (peak at start, zero at end)": "decreasing",
+    "Symmetric  (zero at both ends, peak at middle)": "symmetric",
+}
+
+
+def cumtrapz(f, xs):
+    """Cumulative trapezoidal integral of f over xs, starting at 0."""
+    return np.concatenate(
+        [[0.0], np.cumsum(0.5 * (f[1:] + f[:-1]) * np.diff(xs))]
+    )
+
 
 st.sidebar.header("Beam Configuration")
 
@@ -50,15 +74,19 @@ st.sidebar.header("Loading Configuration")
 
 load_type = st.sidebar.selectbox(
     "Select load type",
-    ["Point Load", "Uniformly Distributed Load (UDL)"]
+    [POINT, UDL, LINEAR, PARABOLIC]
 )
 
 P = 0.0
 w = 0.0
+w_start = 0.0
+w_end = 0.0
+w_peak = 0.0
+parabola_shape = "increasing"
 a = 0.0
 b_load = L
 
-if load_type == "Point Load":
+if load_type == POINT:
 
     P = st.sidebar.number_input(
         "Point load, P (N)",
@@ -84,21 +112,73 @@ if load_type == "Point Load":
 
 else:
 
-    w = st.sidebar.number_input(
-        "UDL intensity, w (N/m)",
-        min_value=0.0,
-        max_value=1_000_000.0,
-        value=500.0,
-        step=50.0,
-        key="udl_intensity"
-    )
+    if load_type == UDL:
+
+        w = st.sidebar.number_input(
+            "UDL intensity, w (N/m)",
+            min_value=0.0,
+            max_value=1_000_000.0,
+            value=500.0,
+            step=50.0,
+            key="udl_intensity"
+        )
+
+    elif load_type == LINEAR:
+
+        w_start = st.sidebar.number_input(
+            "Intensity at start, w₁ (N/m)",
+            min_value=0.0,
+            max_value=1_000_000.0,
+            value=0.0,
+            step=50.0,
+            key="linear_start_intensity"
+        )
+
+        w_end = st.sidebar.number_input(
+            "Intensity at end, w₂ (N/m)",
+            min_value=0.0,
+            max_value=1_000_000.0,
+            value=500.0,
+            step=50.0,
+            key="linear_end_intensity"
+        )
+
+        st.sidebar.caption(
+            "Intensity varies linearly from w₁ to w₂. "
+            "Set w₁ = 0 or w₂ = 0 for a triangular load."
+        )
+
+    else:
+
+        w_peak = st.sidebar.number_input(
+            "Peak intensity, w_max (N/m)",
+            min_value=0.0,
+            max_value=1_000_000.0,
+            value=500.0,
+            step=50.0,
+            key="parabolic_peak_intensity"
+        )
+
+        shape_label = st.sidebar.selectbox(
+            "Parabola shape",
+            list(PARABOLA_SHAPES.keys())
+        )
+        parabola_shape = PARABOLA_SHAPES[shape_label]
+
+        st.sidebar.caption(
+            "Increasing: w = w_max·s²  |  "
+            "Decreasing: w = w_max·(1−s)²  |  "
+            "Symmetric: w = 4·w_max·s·(1−s),  "
+            "where s is the fractional position along the loaded region."
+        )
 
     st.sidebar.caption(
-        "The UDL acts downward between its start and end positions."
+        "The distributed load acts downward between its start "
+        "and end positions."
     )
 
     a = st.sidebar.number_input(
-        "UDL start position (m)",
+        "Load start position (m)",
         min_value=0.0,
         max_value=float(L),
         value=0.0,
@@ -107,7 +187,7 @@ else:
     )
 
     b_load = st.sidebar.number_input(
-        "UDL end position (m)",
+        "Load end position (m)",
         min_value=0.0,
         max_value=float(L),
         value=float(L),
@@ -209,20 +289,47 @@ else:
     )
 
 
-if load_type == "Uniformly Distributed Load (UDL)":
+if load_type in DISTRIBUTED_TYPES:
 
     if b_load <= a:
         st.error(
-            "The UDL end position must be greater than "
+            "The load end position must be greater than "
             "its start position. Adjust the load positions."
         )
         st.stop()
 
 
+def distributed_intensity(xx):
+    """
+    Downward load intensity q(x) in N/m for any distributed load type.
+    Returns 0 outside the loaded region [a, b_load].
+    """
+    xx = np.asarray(xx, dtype=float)
+    inside = (xx >= a) & (xx <= b_load)
+
+    # s = fractional position along the loaded region (0 to 1).
+    s = np.clip((xx - a) / (b_load - a), 0.0, 1.0)
+
+    if load_type == LINEAR:
+        q = w_start + (w_end - w_start) * s
+
+    elif load_type == PARABOLIC:
+        if parabola_shape == "increasing":
+            q = w_peak * s**2
+        elif parabola_shape == "decreasing":
+            q = w_peak * (1.0 - s)**2
+        else:
+            q = 4.0 * w_peak * s * (1.0 - s)
+
+    else:
+        q = np.full_like(xx, w)
+
+    return np.where(inside, q, 0.0)
+
 
 special_positions = [0.0, float(L)]
 
-if load_type == "Point Load":
+if load_type == POINT:
     special_positions.append(float(a))
 else:
     special_positions.extend([float(a), float(b_load)])
@@ -244,11 +351,76 @@ y = np.zeros_like(x)
 RA = 0.0
 RB = 0.0
 M_fixed = 0.0
+total_load_numeric = 0.0
+load_centroid = (a + b_load) / 2.0
 
 
-if beam_type == "Simply Supported":
+if load_type in VARYING_TYPES:
 
-    if load_type == "Point Load":
+    # Linear and parabolic loads are solved by numerical integration
+    # of q(x). Intensity is sampled at interval midpoints, so the
+    # load start/end (which are grid nodes) never fall inside an
+    # interval and the integration stays accurate.
+    dx = np.diff(x)
+    x_mid = 0.5 * (x[:-1] + x[1:])
+    q_mid = distributed_intensity(x_mid)
+
+    # Q(x): load applied to the left of each section.
+    Q = np.concatenate([[0.0], np.cumsum(q_mid * dx)])
+    total_load_numeric = float(Q[-1])
+
+    # Centroid (line of action of the resultant) of the load.
+    first_moment = float(np.sum(q_mid * x_mid * dx))
+
+    if total_load_numeric > 0:
+        load_centroid = first_moment / total_load_numeric
+
+    if beam_type == "Simply Supported":
+
+        # Reactions from equilibrium.
+        RA = total_load_numeric * (L - load_centroid) / L
+        RB = total_load_numeric * load_centroid / L
+
+        # Shear force: V = RA - Q(x).
+        V = RA - Q
+
+        # Bending moment: dM/dx = V, with M(0) = 0.
+        M = cumtrapz(V, x)
+
+        # Deflection (downward positive): EI*y'' = -M.
+        # Integrate twice, then apply y(0) = 0 and y(L) = 0.
+        y_raw = -cumtrapz(cumtrapz(M, x), x) / (E * I)
+        y = y_raw - y_raw[-1] * x / L
+
+        y[0] = 0.0
+        y[-1] = 0.0
+
+    else:
+
+        # Cantilever fixed at x = 0, free at x = L.
+        RA = total_load_numeric
+        RB = 0.0
+
+        # Shear force: V = -(load to the right of the section).
+        V = -(total_load_numeric - Q)
+
+        # Bending moment: dM/dx = V, with M(L) = 0 at the free end.
+        M_raw = cumtrapz(V, x)
+        M = M_raw - M_raw[-1]
+
+        # Fixed-end reaction moment magnitude.
+        M_fixed = float(abs(M[0]))
+
+        # Deflection (downward positive): EI*y'' = -M,
+        # with y(0) = 0 and y'(0) = 0 at the fixed support.
+        y = cumtrapz(cumtrapz(-M / (E * I), x), x)
+
+        y[0] = 0.0
+
+
+elif beam_type == "Simply Supported":
+
+    if load_type == POINT:
 
         # Support reactions.
         RA = P * (L - a) / L
@@ -356,7 +528,7 @@ if beam_type == "Simply Supported":
 
 else:
 
-    if load_type == "Point Load":
+    if load_type == POINT:
 
         # Support reactions.
         RA = P
@@ -423,8 +595,6 @@ else:
             + w * np.maximum(a - x, 0.0)**2 / 2.0
         )
 
-      
-
         y = (
             w / (E * I)
             * (
@@ -445,11 +615,12 @@ V_max = float(np.max(np.abs(V)))
 stress_max = M_max * c / I
 deflection_max = float(np.max(np.abs(y)))
 
-total_load = (
-    P
-    if load_type == "Point Load"
-    else w * (b_load - a)
-)
+if load_type == POINT:
+    total_load = P
+elif load_type in VARYING_TYPES:
+    total_load = total_load_numeric
+else:
+    total_load = w * (b_load - a)
 
 st.divider()
 st.header("Analysis Results")
@@ -494,16 +665,32 @@ st.subheader("Loading Information")
 
 st.write(f"**Load type:** {load_type}")
 
-if load_type == "Point Load":
+if load_type == POINT:
 
     st.write(f"**Applied point load:** {P:.3f} N")
     st.write(f"**Load position:** {a:.3f} m")
 
-else:
+elif load_type == UDL:
 
     st.write(f"**UDL intensity:** {w:.3f} N/m")
     st.write(f"**Loaded region:** {a:.3f} m to {b_load:.3f} m")
     st.write(f"**Total applied load:** {total_load:.3f} N")
+
+elif load_type == LINEAR:
+
+    st.write(f"**Intensity at start (w₁):** {w_start:.3f} N/m")
+    st.write(f"**Intensity at end (w₂):** {w_end:.3f} N/m")
+    st.write(f"**Loaded region:** {a:.3f} m to {b_load:.3f} m")
+    st.write(f"**Total applied load:** {total_load:.3f} N")
+    st.write(f"**Resultant acts at:** {load_centroid:.3f} m from the left end")
+
+else:
+
+    st.write(f"**Peak intensity:** {w_peak:.3f} N/m")
+    st.write(f"**Parabola shape:** {parabola_shape.capitalize()}")
+    st.write(f"**Loaded region:** {a:.3f} m to {b_load:.3f} m")
+    st.write(f"**Total applied load:** {total_load:.3f} N")
+    st.write(f"**Resultant acts at:** {load_centroid:.3f} m from the left end")
 
 st.caption(
     "Dashboard values show magnitudes. Shear-force and "
@@ -554,7 +741,7 @@ else:
         )
 
 # Draw point load.
-if load_type == "Point Load":
+if load_type == POINT:
 
     if P > 0:
 
@@ -577,37 +764,56 @@ if load_type == "Point Load":
             color="red"
         )
 
-# Draw UDL.
+# Draw distributed loads (UDL, linear, parabolic).
 else:
 
-    if w > 0:
+    envelope_x = np.linspace(a, b_load, 400)
+    envelope_q = distributed_intensity(envelope_x)
+    q_max = float(np.max(envelope_q))
+
+    if q_max > 0:
+
+        # Arrow heights are proportional to the local intensity.
+        envelope_h = 0.36 * envelope_q / q_max
 
         arrow_positions = np.linspace(a, b_load, 15)
+        arrow_heights = 0.36 * distributed_intensity(arrow_positions) / q_max
 
-        for pos in arrow_positions:
+        for pos, arrow_h in zip(arrow_positions, arrow_heights):
 
-            ax.annotate(
-                "",
-                xy=(pos, -0.04),
-                xytext=(pos, 0.36),
-                arrowprops=dict(
-                    arrowstyle="->",
-                    lw=1.2,
-                    color="red"
+            if arrow_h > 0.02:
+
+                ax.annotate(
+                    "",
+                    xy=(pos, -0.04),
+                    xytext=(pos, arrow_h),
+                    arrowprops=dict(
+                        arrowstyle="->",
+                        lw=1.2,
+                        color="red"
+                    )
                 )
-            )
 
+        # Load envelope (flat for UDL, sloped for linear,
+        # curved for parabolic).
         ax.plot(
-            [a, b_load],
-            [0.36, 0.36],
+            envelope_x,
+            envelope_h,
             color="red",
             linewidth=2
         )
 
+        if load_type == UDL:
+            load_label = f"UDL = {w:.1f} N/m"
+        elif load_type == LINEAR:
+            load_label = f"w = {w_start:.1f} → {w_end:.1f} N/m"
+        else:
+            load_label = f"Parabolic, peak = {w_peak:.1f} N/m"
+
         ax.text(
             (a + b_load) / 2.0,
             0.44,
-            f"UDL = {w:.1f} N/m",
+            load_label,
             ha="center",
             color="red"
         )
@@ -631,7 +837,7 @@ st.header("Shear Force Diagram (SFD)")
 
 fig, ax = plt.subplots(figsize=(11, 3.5))
 
-if load_type == "Point Load":
+if load_type == POINT:
 
     # A point load creates a shear-force jump.
     ax.step(
@@ -707,9 +913,11 @@ ax.plot(
     label="Original beam"
 )
 
+# y is stored downward-positive, so it is negated for plotting
+# to make the beam visibly sag below the original position.
 ax.plot(
     x,
-    y * visual_scale,
+    -y * visual_scale,
     linewidth=2,
     label="Deflected shape"
 )
